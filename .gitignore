@@ -1,0 +1,11 @@
+# Compressed output results
+DDR_Compressed/
+*.xml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
