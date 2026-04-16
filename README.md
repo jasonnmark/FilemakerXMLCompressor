@@ -1,56 +1,59 @@
-# FileMaker DDR XML Compressor
+# FileMaker XML Compressor
 
-Converts a FileMaker Database Design Report (DDR) XML file into compact, LLM-friendly text files that Claude can actually work with.
+Converts a FileMaker **Save a Copy as XML** file (FileMaker 2024 / v21–22) into compact, LLM-friendly text files that Claude can actually work with.
 
 ## What It Does
 
-Takes your 146MB+ DDR XML and produces ~10 small text files organized by category, typically **95-97% smaller** than the original. It:
+Takes your large `<FMSaveAsXML>` export and produces ~10 small text files organized by category, typically **95-97% smaller** than the original. It:
 
-- **Strips** all `<DisplayCalculation>` blocks (redundant - just formatted versions of the raw calc)
 - **Strips** all styling/positioning data (bounds, CSS, coordinates, colors, fonts)
 - **Strips** theme definitions, UUIDs, and internal tracking data
 - **Preserves** every table, field, calculation, relationship, script step, layout object, value list, custom function, and security setting
 - **Deduplicates** data that FileMaker repeats across sections
+- **Handles UTF-16 LE/BE with BOM** natively (no encoding gymnastics on your end)
+- **Preserves emoji intact** — no restoration shim needed
 - Uses a **custom shorthand format** (not XML or JSON) designed for maximum token efficiency
 
 ## Requirements
 
-- **Python 3.6+** (no external packages needed - uses only the standard library)
+- **macOS** (the AppleScript droplet) — Python 3.6+ for the standalone script
+- **Python 3.6+** (no external packages — uses only the standard library)
 
-## Setup
+## Two Ways to Use It
 
-1. Copy `fm_ddr_compress.py` to any convenient folder
-2. That's it. No pip install, no dependencies.
+### A. The Mac App (recommended)
 
-## Usage
+`build/FileMaker XML Compressor.app` — a drag-and-drop droplet built from `build/XMLCompressor.applescript`.
 
-### Step 1: Generate Your DDR
+1. Drop a `*_fmp12.xml` file (your Save-a-Copy-as-XML export) onto the app icon
+   - or double-click the app to get a file picker
+2. Pick where the compressed output folder should go
+3. The app runs the compressor and offers to reveal the result in Finder
 
-In FileMaker Pro:
-1. **File → Save/Send Records As → Database Design Report** (or **Tools → Database Design Report** in older versions)
-2. Select **XML** format
-3. Check all the sections you want (recommended: check everything)
-4. Choose an output folder and click **Create**
+**First-launch note:** unsigned, so Gatekeeper blocks the first launch. Right-click → Open once and approve.
 
-This produces a folder with `Summary.xml` and one or more detail files like `YourFile_fmp12.xml`. **You want the detail file** (the big one), not Summary.xml.
-
-### Step 2: Run the Compressor
+### B. The Python script
 
 ```bash
-# Basic usage - outputs to a DDR_Compressed subfolder next to your XML
-python fm_ddr_compress.py /path/to/YourFile_fmp12.xml
+# Basic usage — outputs to a "<filename>_Compressed" subfolder next to your XML
+python3 fm_saxml_compress.py /path/to/YourFile_fmp12.xml
 
 # Custom output directory
-python fm_ddr_compress.py /path/to/YourFile_fmp12.xml --output-dir /path/to/output
-
-# On Windows
-python fm_ddr_compress.py "C:\Users\You\Documents\DDR\YourFile_fmp12.xml"
-
-# On Mac
-python3 fm_ddr_compress.py ~/Documents/DDR/YourFile_fmp12.xml
+python3 fm_saxml_compress.py /path/to/YourFile_fmp12.xml --output-dir /path/to/output
 ```
 
-### Step 3: Upload to Claude
+## How to Generate the Source XML
+
+In FileMaker Pro (2024 / v21–22):
+
+1. Open the file you want to export
+2. **File → Save a Copy as…** (or the "Save a Copy as XML" item on newer versions)
+3. Choose **XML** as the format
+4. Save
+
+This produces a single `*.xml` file. Feed that to the app or script.
+
+## Output Files
 
 The output folder contains 10 files. Upload what you need based on your task:
 
@@ -73,16 +76,26 @@ The output folder contains 10 files. Upload what you need based on your task:
 - **Layout/UI work:** 04 + 03 (scripts are often triggered from layouts)
 - **Full picture:** 01 + 02 + 03 + 06 (usually fits in context)
 
+## Rebuilding the Mac App
+
+The compiled `.app` is gitignored (it's a build artifact). To rebuild from source:
+
+```bash
+cd build
+osacompile -o "FileMaker XML Compressor.app" XMLCompressor.applescript
+cp ../fm_saxml_compress.py "FileMaker XML Compressor.app/Contents/Resources/"
+```
+
+(Recompiling wipes the Resources folder, so the `cp` always has to follow.)
+
 ## If Files Are Still Too Large
 
-The `03_SCRIPTS.txt` file tends to be the largest. If it's still too big:
+The `03_SCRIPTS.txt` and `04_LAYOUTS.txt` files tend to be the largest. If they're still too big:
 
-1. Open it in a text editor
-2. Search for `SCRIPT:` to find script boundaries
-3. Copy just the scripts you're working on into a separate file
+1. Open in a text editor
+2. Search for `SCRIPT:` (or `LAYOUT:`) to find item boundaries
+3. Copy just the items you're working on into a separate file
 4. Upload that instead
-
-Same approach works for `01_SCHEMA.txt` - search for `T:` to find table boundaries.
 
 ## Output Format Explained
 
@@ -109,14 +122,15 @@ This is roughly **10-20x more token-efficient** than the equivalent XML while pr
 
 ## Troubleshooting
 
-**"This appears to be the Summary XML file"**
-→ You pointed it at `Summary.xml`. Use the detail file instead (usually named like `YourFile_fmp12.xml`).
-
 **MemoryError on very large files**
 → The script loads the entire XML into memory. For files over 500MB, you may need a machine with 8GB+ RAM available. Close other applications first.
 
 **Missing sections in output**
-→ The DDR only includes sections you checked when generating it. Re-generate with all sections checked.
+→ Some sections only exist if your file uses them (e.g., custom menus, external data sources).
 
-**Encoding errors**
-→ Try: `python fm_ddr_compress.py yourfile.xml 2>&1 | head -50` to see where it fails. The DDR should be UTF-8 but some FileMaker versions produce inconsistent encoding.
+**App says "Compression failed"**
+→ The dialog shows the underlying Python traceback. Most often this means the XML isn't a Save-a-Copy-as-XML file (e.g., it's the old DDR format, or a record export). The root element should be `<FMSaveAsXML>`.
+
+## Legacy DDR Support
+
+Earlier versions of this project compressed the old **Database Design Report** XML (`<FMPReport>` root). That code path has been retired in favor of the newer Save-a-Copy-as-XML format, which is faster, handles emoji natively, and contains everything the DDR did. The retired DDR scripts are preserved in git history if ever needed.
