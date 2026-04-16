@@ -846,11 +846,14 @@ class DDRParser:
         output.append("KEY:")
         output.append("  FOLDER: <name>")
         output.append("  LAYOUT: <name> [id:<id>] TO:<table_occurrence>")
-        output.append("    OBJ: <type> [name:<obj_name>] <field_ref>")
         output.append("    TRIGGER: <trigger_type> -> <script_name>")
-        output.append("    PART: <part_type> (Header, Body, Footer, etc.)")
-        output.append("    Object types: Field, Button, Portal, TabCtrl, WebViewer,")
-        output.append("      PopoverBtn, SlideCtrl, ButtonBar, Text, Chart, etc.")
+        output.append("    FIELD <TO::FieldName> | name:<obj_name> | TRIGGER:...")
+        output.append("    BUTTON \"label\" | -> <script_name> | param=(...) | icon:<id>")
+        output.append("    PORTAL showFrom:<TO> | filter=(...) | sort=[...]")
+        output.append("      (portal child objects indented below)")
+        output.append("    TABCTRL tabs:[Tab1,Tab2,...] | TAB: <n> + children")
+        output.append("    POPOVER | WEBVIEWER | CHART | SLIDECTRL | BUTTONBAR")
+        output.append("    TEXT (only if has trigger or merge field)")
         output.append("")
 
         catalog = self.file_node.find("LayoutCatalog")
@@ -897,116 +900,283 @@ class DDRParser:
             process_layout_item(child, 0)
 
         self.stats["layouts"] = layout_count
+        # Count objects in output
+        obj_count = sum(1 for line in output if any(
+            line.strip().startswith(t) for t in
+            ("FIELD", "BUTTON", "PORTAL", "TABCTRL", "POPOVER",
+             "WEBVIEWER", "CHART", "SLIDECTRL", "BUTTONBAR", "TEXT", "OBJ:")))
+        print(f"  Extracted {layout_count} layouts, {obj_count} objects.")
         return "\n".join(output)
 
     def _extract_layout_objects(self, layout_el, output, depth):
         """Extract objects from a layout, focusing on functional elements."""
         prefix = "  " * depth
 
-        # Parts
+        # Parts — objects are often nested INSIDE parts, not siblings
         part_list = layout_el.find("PartList")
         if part_list is not None:
             for part in part_list.findall("Part"):
                 ptype = attr(part, "type")
-                output.append(f"{prefix}PART: {ptype}")
+                # Look for objects inside each part
+                obj_list = part.find("ObjectList")
+                if obj_list is not None:
+                    self._process_objects(obj_list, output, depth)
 
-        # Objects - recursive extraction
+        # Also check for objects directly under layout (some DDR versions)
         obj_list = layout_el.find("ObjectList") or layout_el.find("Object")
         if obj_list is not None:
             self._process_objects(obj_list, output, depth)
 
-    def _process_objects(self, parent, output, depth, max_depth=6):
+        # Fallback: search anywhere under the layout for objects
+        # (handles unexpected nesting)
+        if not any("OBJ:" in line for line in output[-20:] if isinstance(line, str)):
+            for obj in layout_el.iter("Object"):
+                otype = attr(obj, "type")
+                if otype and otype not in ("Line", "Rectangle", "RoundedRect", "Oval"):
+                    self._process_single_object(obj, output, depth)
+
+    def _process_objects(self, parent, output, depth, max_depth=8):
         """Recursively process layout objects, extracting functional info."""
         if depth > max_depth + 4:
             return
 
-        prefix = "  " * depth
-
         for obj in parent:
             if obj.tag == "Object":
-                otype = attr(obj, "type")
-                oname = attr(obj, "name")
-                obj_flags = attr(obj, "flags")
+                self._process_single_object(obj, output, depth, max_depth)
+            elif obj.tag == "ObjectList":
+                self._process_objects(obj, output, depth, max_depth)
 
-                # Skip purely decorative objects to save space
-                if otype in ("Line", "Rectangle", "RoundedRect", "Oval"):
-                    continue
+    def _process_single_object(self, obj, output, depth, max_depth=8):
+        """Process a single layout object and extract functional info."""
+        prefix = "  " * depth
+        otype = attr(obj, "type")
+        oname = attr(obj, "name")
 
-                parts = [f"OBJ: {otype}"]
+        # Skip purely decorative objects
+        if otype in ("Line", "Rectangle", "RoundedRect", "Oval"):
+            return
+
+        parts = []
+
+        # --- Field reference ---
+        field_el = (obj.find(".//FieldObj/Field") or obj.find(".//Field")
+                    or obj.find("FieldObj/Field"))
+        field_ref = ""
+        if field_el is not None:
+            ftbl = attr(field_el, "table")
+            fname = attr(field_el, "name")
+            if ftbl and fname:
+                field_ref = f"{ftbl}::{fname}"
+
+        # --- Portal ---
+        portal = obj.find("PortalObj") or obj.find("Portal")
+        if portal is not None:
+            ptable = portal.find("Table")
+            portal_to = attr(ptable, "name") if ptable is not None else "?"
+            portal_parts = [f"PORTAL showFrom:{portal_to}"]
+            if oname:
+                portal_parts.append(f"name:{oname}")
+            # Portal filter
+            pfilter = portal.find("Filter")
+            if pfilter is not None:
+                fc = find_calc(pfilter)
+                if fc:
+                    portal_parts.append(f"filter=({fc[:120]})")
+            # Portal sort
+            psort = portal.find("SortList")
+            if psort is not None:
+                sorts = []
+                for s in psort.findall("Sort"):
+                    sf = s.find("Field")
+                    if sf is not None:
+                        sorts.append(f"{attr(sf, 'table')}::{attr(sf, 'name')}")
+                if sorts:
+                    portal_parts.append(f"sort=[{','.join(sorts)}]")
+            # Portal row count
+            initial_rows = portal.get("initialRows", "")
+            if initial_rows:
+                portal_parts.append(f"rows:{initial_rows}")
+            output.append(f"{prefix}{' | '.join(portal_parts)}")
+            # Recurse into portal child objects (fields inside portal)
+            child_obj_list = obj.find("ObjectList")
+            if child_obj_list is not None:
+                self._process_objects(child_obj_list, output, depth + 1, max_depth)
+            return
+
+        # --- Button / ButtonBar / PopoverButton ---
+        btn = obj.find("ButtonObj") or obj.find("Button")
+        btn_bar = obj.find("ButtonBarObj")
+        popover = obj.find("PopoverButtonObj")
+
+        if btn is not None or otype == "Button":
+            btn_el = btn if btn is not None else obj
+            btn_parts = ["BUTTON"]
+            if oname:
+                btn_parts.append(f'"{oname}"')
+            # Button label/text
+            btn_text_el = obj.find(".//Text/ParagraphList//Data")
+            if btn_text_el is None:
+                btn_text_el = obj.find(".//Text")
+            if btn_text_el is not None and btn_text_el.text:
+                label = btn_text_el.text.strip()[:60]
+                if label:
+                    btn_parts.append(f'label:"{label}"')
+            # Script reference
+            script_ref = btn_el.find(".//Script") or btn_el.find("Script")
+            if script_ref is not None:
+                btn_parts.append(f"-> {attr(script_ref, 'name')}")
+                # Script parameter
+                param_el = btn_el.find(".//Calculation")
+                if param_el is not None:
+                    pc = cdata_text(param_el) or find_calc(param_el)
+                    if pc:
+                        btn_parts.append(f"param=({pc[:100]})")
+            # Single-step action
+            step = btn_el.find(".//Step") or btn_el.find("Step")
+            if step is not None and script_ref is None:
+                sn = step.find("StepName")
+                if sn is not None:
+                    btn_parts.append(f"action:{text(sn)}")
+            # Icon
+            icon_el = obj.find(".//IconID") or obj.find("IconID")
+            if icon_el is not None and icon_el.text:
+                btn_parts.append(f"icon:{icon_el.text.strip()}")
+            output.append(f"{prefix}{' | '.join(btn_parts)}")
+            # Recurse into child objects
+            child_obj_list = obj.find("ObjectList")
+            if child_obj_list is not None:
+                self._process_objects(child_obj_list, output, depth + 1, max_depth)
+            return
+
+        if btn_bar is not None or otype == "ButtonBar":
+            output.append(f"{prefix}BUTTONBAR{' | name:' + oname if oname else ''}")
+            # Each segment of the button bar
+            for seg in obj.iter("Object"):
+                if seg is not obj:
+                    self._process_single_object(seg, output, depth + 1, max_depth)
+            return
+
+        if popover is not None or otype == "PopoverButton":
+            pop_parts = ["POPOVER"]
+            if oname:
+                pop_parts.append(f'"{oname}"')
+            # Popover button script
+            script_ref = obj.find(".//Script")
+            if script_ref is not None:
+                pop_parts.append(f"-> {attr(script_ref, 'name')}")
+            output.append(f"{prefix}{' | '.join(pop_parts)}")
+            child_obj_list = obj.find("ObjectList")
+            if child_obj_list is not None:
+                self._process_objects(child_obj_list, output, depth + 1, max_depth)
+            return
+
+        # --- Tab Control ---
+        tab_ctrl = obj.find("TabControlObj")
+        if tab_ctrl is not None or otype == "TabControl":
+            tabs = obj.findall(".//TabPanel") or obj.findall(".//Tab")
+            tab_names = [attr(t, "name") or f"Tab{i+1}" for i, t in enumerate(tabs)]
+            output.append(f"{prefix}TABCTRL tabs:[{','.join(tab_names)}]"
+                          f"{' | name:' + oname if oname else ''}")
+            # Recurse into tab panels
+            for tab_panel in tabs:
+                tname = attr(tab_panel, "name") or "?"
+                child_obj_list = tab_panel.find("ObjectList")
+                if child_obj_list is not None:
+                    output.append(f"{prefix}  TAB: {tname}")
+                    self._process_objects(child_obj_list, output, depth + 2, max_depth)
+            return
+
+        # --- Slide Control ---
+        slide_ctrl = obj.find("SlideControlObj")
+        if slide_ctrl is not None or otype == "SlideControl":
+            output.append(f"{prefix}SLIDECTRL{' | name:' + oname if oname else ''}")
+            child_obj_list = obj.find("ObjectList")
+            if child_obj_list is not None:
+                self._process_objects(child_obj_list, output, depth + 1, max_depth)
+            return
+
+        # --- Web Viewer ---
+        wv = obj.find("WebViewerObj")
+        if wv is not None or otype == "WebViewer":
+            url_calc = find_calc(wv) if wv is not None else ""
+            output.append(f"{prefix}WEBVIEWER"
+                          f"{' | name:' + oname if oname else ''}"
+                          f"{' | url=(' + url_calc[:100] + ')' if url_calc else ''}")
+            return
+
+        # --- Chart ---
+        if otype == "Chart":
+            output.append(f"{prefix}CHART{' | name:' + oname if oname else ''}")
+            return
+
+        # --- Field (standalone, not in portal/button) ---
+        if field_ref:
+            fparts = [f"FIELD {field_ref}"]
+            if oname:
+                fparts.append(f"name:{oname}")
+            # Object trigger
+            triggers = obj.find("ScriptTriggers")
+            if triggers is not None:
+                for trig in triggers:
+                    ts = trig.find("Script") or trig.find(".//Script")
+                    if ts is not None:
+                        fparts.append(f"TRIGGER:{trig.tag}->{attr(ts, 'name')}")
+            # Conditional visibility
+            cond_vis = obj.find("ConditionalVisibility")
+            if cond_vis is not None:
+                cv_calc = find_calc(cond_vis)
+                if cv_calc:
+                    fparts.append(f"hideWhen=({cv_calc[:80]})")
+            output.append(f"{prefix}{' | '.join(fparts)}")
+            # Recurse
+            child_obj_list = obj.find("ObjectList")
+            if child_obj_list is not None:
+                self._process_objects(child_obj_list, output, depth + 1, max_depth)
+            return
+
+        # --- Text object (only if it has a trigger or merge field) ---
+        if otype == "Text":
+            has_trigger = obj.find("ScriptTriggers") is not None
+            merge = obj.find(".//MergeField") or obj.find(".//Field")
+            if has_trigger or merge:
+                tparts = ["TEXT"]
                 if oname:
-                    parts.append(f"name:{oname}")
-
-                # Field reference
-                field_el = obj.find(".//FieldObj/Field") or obj.find(".//Field")
-                if field_el is not None:
-                    ftbl = attr(field_el, "table")
-                    fname = attr(field_el, "name")
-                    if ftbl and fname:
-                        parts.append(f"{ftbl}::{fname}")
-
-                # Button actions
-                btn = obj.find("ButtonObj") or obj.find("Button")
-                if btn is not None:
-                    script_ref = btn.find(".//Script") or btn.find("Script")
-                    if script_ref is not None:
-                        parts.append(f"-> {attr(script_ref, 'name')}")
-                    step = btn.find(".//Step") or btn.find("Step")
-                    if step is not None:
-                        sn = step.find("StepName")
-                        if sn is not None:
-                            parts.append(f"action:{text(sn)}")
-
-                # Portal
-                portal = obj.find("PortalObj") or obj.find("Portal")
-                if portal is not None:
-                    ptable = portal.find("Table")
-                    if ptable is not None:
-                        parts.append(f"showFrom:{attr(ptable, 'name')}")
-
-                # Tab Control / Slide Control
-                tab_ctrl = obj.find("TabControlObj")
-                if tab_ctrl is not None:
-                    tabs = tab_ctrl.findall(".//Tab") or tab_ctrl.findall("Tab")
-                    tab_names = [attr(t, "name") or f"Tab{i+1}" for i, t in enumerate(tabs)]
-                    if tab_names:
-                        parts.append(f"tabs:[{','.join(tab_names)}]")
-
-                # Web Viewer
-                wv = obj.find("WebViewerObj")
-                if wv is not None:
-                    url_calc = find_calc(wv)
-                    if url_calc:
-                        parts.append(f"url=({url_calc[:100]})")
-
-                # Popover
-                pop = obj.find("PopoverButtonObj")
-                if pop is not None:
-                    parts.append("(popover)")
-
-                # Object script triggers
+                    tparts.append(f"name:{oname}")
+                if merge is not None:
+                    tparts.append(f"merge:{attr(merge, 'table')}::{attr(merge, 'name')}")
                 triggers = obj.find("ScriptTriggers")
                 if triggers is not None:
                     for trig in triggers:
                         ts = trig.find("Script") or trig.find(".//Script")
                         if ts is not None:
-                            parts.append(f"TRIGGER:{trig.tag}->{attr(ts, 'name')}")
+                            tparts.append(f"TRIGGER:{trig.tag}->{attr(ts, 'name')}")
+                output.append(f"{prefix}{' | '.join(tparts)}")
+            return
 
-                # Conditional visibility
-                cond_vis = obj.find("ConditionalVisibility")
+        # --- Generic: anything else with a trigger or conditional visibility ---
+        if otype and otype not in ("Text", "Group"):
+            has_trigger = obj.find("ScriptTriggers") is not None
+            cond_vis = obj.find("ConditionalVisibility")
+            if has_trigger or cond_vis is not None or oname:
+                gparts = [f"OBJ:{otype}"]
+                if oname:
+                    gparts.append(f"name:{oname}")
+                if has_trigger:
+                    triggers = obj.find("ScriptTriggers")
+                    for trig in triggers:
+                        ts = trig.find("Script") or trig.find(".//Script")
+                        if ts is not None:
+                            gparts.append(f"TRIGGER:{trig.tag}->{attr(ts, 'name')}")
                 if cond_vis is not None:
                     cv_calc = find_calc(cond_vis)
                     if cv_calc:
-                        parts.append(f"hideWhen=({cv_calc[:80]})")
+                        gparts.append(f"hideWhen=({cv_calc[:80]})")
+                output.append(f"{prefix}{' | '.join(gparts)}")
 
-                output.append(f"{prefix}{' | '.join(parts)}")
-
-                # Recurse into child objects (for portals, tab panels, etc.)
-                child_obj_list = obj.find("ObjectList")
-                if child_obj_list is not None:
-                    self._process_objects(child_obj_list, output, depth + 1, max_depth)
-
-            elif obj.tag == "ObjectList":
-                self._process_objects(obj, output, depth, max_depth)
+        # Recurse
+        child_obj_list = obj.find("ObjectList")
+        if child_obj_list is not None:
+            self._process_objects(child_obj_list, output, depth + 1, max_depth)
 
     # --- VALUE LISTS ---
     def extract_valuelists(self):

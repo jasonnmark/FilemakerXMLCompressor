@@ -1,4 +1,5 @@
 # Compressed output results
+*_Compressed/
 DDR_Compressed/
 *.xml
 
@@ -6,6 +7,9 @@ DDR_Compressed/
 __pycache__/
 *.pyc
 *.pyo
+
+# Built .app bundle (regenerable from build/*.applescript)
+build/*.app/
 
 # OS files
 .DS_Store
