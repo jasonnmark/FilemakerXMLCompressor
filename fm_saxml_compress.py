@@ -273,6 +273,24 @@ class SaXMLCompressor:
         # Fallback: search everywhere
         return self.root.find(f".//{tag}")
 
+    def _catalog_items(self, catalog):
+        """Yield item elements from a catalog.
+
+        Some catalogs (CustomFunctions, Accounts, PrivilegeSets,
+        ExtendedPrivileges, CustomMenuSets) wrap their items inside an
+        <ObjectList> child alongside metadata like <UUID>, <TagList>,
+        <Options>. Others list items as direct children. Handle both.
+        """
+        if catalog is None:
+            return
+        ol = catalog.find("ObjectList")
+        source = ol if ol is not None else catalog
+        for child in source:
+            if child.tag in ("UUID", "TagList", "Options",
+                             "PasteIndexList", "ObjectList"):
+                continue
+            yield child
+
     # ============================================================
     # 01 SCHEMA — Tables & Fields
     # ============================================================
@@ -422,14 +440,28 @@ class SaXMLCompressor:
         return "\n".join(output)
 
     def _collect_fields(self, container, fields_by_table):
-        """Collect fields from a FieldCatalog or FieldsForTables container."""
-        table_ref = (container.find("BaseTableReference")
-                     or container.find("TableReference"))
+        """Collect fields from a FieldCatalog or FieldsForTables container.
+
+        FieldsForTables wraps one FieldCatalog per table — iterate them all.
+        A single FieldCatalog has BaseTableReference + ObjectList > Field.
+
+        Note: never chain Element returns with `or` — childless Elements
+        are falsy in Python, so `find('A') or find('B')` returns None
+        when A exists but has no children. Use explicit `is None` checks.
+        """
+        table_ref = container.find("BaseTableReference")
         if table_ref is None:
-            for child in container:
-                if "Reference" in child.tag and "Field" not in child.tag:
-                    table_ref = child
-                    break
+            table_ref = container.find("TableReference")
+
+        # Wrapper case: no table ref at this level → recurse into every child FieldCatalog
+        if table_ref is None:
+            child_fcs = (container.findall("FieldCatalog")
+                         + container.findall("FieldCataloogue"))
+            if child_fcs:
+                for fc in child_fcs:
+                    self._collect_fields(fc, fields_by_table)
+                return
+            # No nested catalogs — fall through and try to read fields directly
 
         tname = attr(table_ref, "name") if table_ref is not None else "?"
         tid = attr(table_ref, "id") if table_ref is not None else ""
@@ -441,14 +473,9 @@ class SaXMLCompressor:
                 if field.tag == "Field":
                     fields_by_table[(tid, tname)].append(field)
         else:
-            # Nested FieldCatalog
-            fc = container.find("FieldCatalog") or container.find("FieldCataloogue")
-            if fc is not None:
-                self._collect_fields(fc, fields_by_table)
-            else:
-                for field in container:
-                    if field.tag == "Field" and field.get("name"):
-                        fields_by_table[(tid, tname)].append(field)
+            for field in container:
+                if field.tag == "Field" and field.get("name"):
+                    fields_by_table[(tid, tname)].append(field)
 
     # ============================================================
     # 02 TABLE OCCURRENCES & RELATIONSHIPS (merged)
@@ -1298,7 +1325,7 @@ class SaXMLCompressor:
             return "\n".join(output)
 
         cf_count = 0
-        for cf in cfc:
+        for cf in self._catalog_items(cfc):
             name = attr(cf, "name")
             cfid = attr(cf, "id")
             if not name:
@@ -1343,15 +1370,24 @@ class SaXMLCompressor:
             if loc is None:
                 continue
             for cat in [loc.find("AccountsCatalog"), loc.find("AccountCatalog")]:
-                if cat is None:
-                    continue
-                for acct in cat:
-                    name = attr(acct, "name")
+                for acct in self._catalog_items(cat):
+                    name = find_text(acct.find("Authentication"), "AccountName") if acct.find("Authentication") is not None else ""
+                    if not name:
+                        name = attr(acct, "name")
                     if not name:
                         continue
                     acct_count += 1
-                    active = attr(acct, "active", "?")
-                    output.append(f"  ACCT: {name} | {'Active' if active == 'True' else 'Inactive'}")
+                    enabled = attr(acct, "enable") or attr(acct, "active")
+                    state = "Active" if enabled == "True" else "Inactive"
+                    atype = attr(acct, "type")
+                    psref = acct.find("PrivilegeSetReference")
+                    ps = attr(psref, "name") if psref is not None else ""
+                    parts = [f"  ACCT: {name}", state]
+                    if atype:
+                        parts.append(atype)
+                    if ps:
+                        parts.append(f"priv:{ps}")
+                    output.append(" | ".join(parts))
 
         output.append("")
         output.append("--- PRIVILEGE SETS ---")
@@ -1359,9 +1395,7 @@ class SaXMLCompressor:
             if loc is None:
                 continue
             for cat in [loc.find("PrivilegeSetsCatalog"), loc.find("PrivilegeSetCatalog")]:
-                if cat is None:
-                    continue
-                for ps in cat:
+                for ps in self._catalog_items(cat):
                     name = attr(ps, "name")
                     if name:
                         output.append(f"  PRIVSET: {name}")
@@ -1373,9 +1407,7 @@ class SaXMLCompressor:
                 continue
             for cat in [loc.find("ExtendedPrivilegesCatalog"),
                         loc.find("ExtendedPrivilegeCatalog")]:
-                if cat is None:
-                    continue
-                for ep in cat:
+                for ep in self._catalog_items(cat):
                     name = attr(ep, "name")
                     if name:
                         output.append(f"  EXT: {name}")
