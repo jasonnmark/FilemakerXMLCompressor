@@ -47,29 +47,51 @@ def find_text(parent, tag):
 
 
 def find_calc(parent):
-    """Extract calculation text. SaXML pattern: Calculation > Text > CDATA."""
+    """Extract calculation text from SaXML.
+
+    Step parameters use a doubly-nested form:
+      <Calculation datatype=".."><Calculation><Text>...</Text></Calculation></Calculation>
+    Field auto-enter / portal filters use a single level:
+      <Calculation><Text>...</Text></Calculation>
+    Auto-enter wraps in <Calculated>.
+    """
     if parent is None:
         return ""
-    # Direct Calculation child
     calc = parent.find("Calculation")
     if calc is None:
-        # Auto-enter: Calculated > Calculation
         calcd = parent.find("Calculated")
         if calcd is not None:
             calc = calcd.find("Calculation")
     if calc is not None:
-        # SaXML: Calculation > Text with CDATA
+        inner = calc.find("Calculation")
+        if inner is not None:
+            t = inner.find("Text")
+            if t is not None and t.text:
+                return t.text.strip()
         t = calc.find("Text")
         if t is not None and t.text:
             return t.text.strip()
-        # Direct text on Calculation element
         if calc.text and calc.text.strip():
             return calc.text.strip()
-    # Fallback: Text child of parent
     t = parent.find("Text")
     if t is not None and t.text:
         return t.text.strip()
     return ""
+
+
+def param_field_ref(param_el):
+    """Read TO::Field from a <Parameter type="FieldReference"> element."""
+    if param_el is None:
+        return ""
+    fr = param_el.find("FieldReference")
+    if fr is None:
+        return ""
+    fname = attr(fr, "name")
+    tor = fr.find("TableOccurrenceReference")
+    to_name = attr(tor, "name") if tor is not None else ""
+    if to_name and fname:
+        return f"{to_name}::{fname}"
+    return fname or ""
 
 
 def ref_str(ref_el):
@@ -680,7 +702,7 @@ class SaXMLCompressor:
         prefix = "  " * depth
         step_type_id = attr(step, "id")
         step_name = STEP_TYPES.get(step_type_id, f"Step#{step_type_id}")
-        enabled = attr(step, "enabled", "True")
+        enabled = attr(step, "enable") or attr(step, "enabled", "True")
         disabled = " [DISABLED]" if enabled == "False" else ""
 
         # Extract parameters based on step type
@@ -703,55 +725,50 @@ class SaXMLCompressor:
                     return f"// {ct}"
             return "// (empty)"
 
+        params = step.findall("ParameterValues/Parameter")
+
         # Set Variable (141)
         if type_id == "141":
-            params = step.findall(".//ParameterValues/Parameter")
             var_name = ""
             var_value = ""
             for p in params:
-                pid = attr(p, "id")
-                val = p.find("Value")
-                if val is not None:
-                    calc = find_calc(val)
-                    if pid == "0":  # Variable name
-                        var_name = calc or find_text(val, "Text")
-                    elif pid == "1":  # Value
-                        var_value = calc or find_text(val, "Text")
+                if attr(p, "type") == "Variable":
+                    name_el = p.find("Name")
+                    if name_el is not None:
+                        var_name = attr(name_el, "value")
+                    val_el = p.find("value")
+                    if val_el is not None:
+                        var_value = find_calc(val_el)
             if var_name:
                 return f"{var_name} = {var_value}" if var_value else var_name
 
         # Set Field (76)
         if type_id == "76":
-            fr = field_ref_str(step)
+            fr = ""
             calc = ""
-            params = step.findall(".//ParameterValues/Parameter")
             for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
-                    if c:
-                        calc = c
-                        break
+                ptype = attr(p, "type")
+                if ptype == "FieldReference":
+                    fr = param_field_ref(p)
+                elif ptype == "Calculation":
+                    calc = find_calc(p)
             if fr:
                 return f"{fr} = {calc}" if calc else fr
 
-        # If / Else If (68)
-        if type_id == "68":
-            params = step.findall(".//ParameterValues/Parameter")
-            for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
-                    if c:
-                        return f"({c})"
+        # Set Field By Name (178): two Calculation params (target name, value)
+        if type_id == "178":
+            calcs = [find_calc(p) for p in params if attr(p, "type") == "Calculation"]
+            calcs = [c for c in calcs if c]
+            if len(calcs) >= 2:
+                return f"{calcs[0]} = {calcs[1]}"
+            if calcs:
+                return f"name=({calcs[0]})"
 
-        # Exit Loop If (72)
-        if type_id == "72":
-            params = step.findall(".//ParameterValues/Parameter")
+        # If (68) / Exit Loop If (72)
+        if type_id in ("68", "72"):
             for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
+                if attr(p, "type") == "Calculation":
+                    c = find_calc(p)
                     if c:
                         return f"({c})"
 
@@ -759,15 +776,12 @@ class SaXMLCompressor:
         if type_id in ("1", "140"):
             sref = step.find(".//ScriptReference")
             sname = attr(sref, "name") if sref is not None else "?"
-            # Script parameter
-            params = step.findall(".//ParameterValues/Parameter")
             param_calc = ""
             for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
-                    if c:
-                        param_calc = c
+                if attr(p, "type") == "Parameter":
+                    inner = p.find("Parameter")
+                    if inner is not None:
+                        param_calc = find_calc(inner)
                         break
             result = f'"{sname}"'
             if param_calc:
@@ -779,29 +793,22 @@ class SaXMLCompressor:
             layout_ref = step.find(".//LayoutReference")
             if layout_ref is not None:
                 return f'"{attr(layout_ref, "name")}"'
-            # By calculation
-            params = step.findall(".//ParameterValues/Parameter")
             for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
+                if attr(p, "type") == "Calculation":
+                    c = find_calc(p)
                     if c:
                         return f"=> {c}"
 
         # Show Custom Dialog (87, 55)
         if type_id in ("87", "55"):
-            params = step.findall(".//ParameterValues/Parameter")
             title = ""
             msg = ""
             for p in params:
-                pid = attr(p, "id")
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
-                    if pid == "0":
-                        title = c
-                    elif pid == "1":
-                        msg = c
+                ptype = attr(p, "type")
+                if ptype == "Title":
+                    title = find_calc(p)
+                elif ptype == "Message":
+                    msg = find_calc(p)
             result = ""
             if title:
                 result += f"title=({title})"
@@ -811,26 +818,26 @@ class SaXMLCompressor:
 
         # Exit Script (103, 177)
         if type_id in ("103", "177"):
-            params = step.findall(".//ParameterValues/Parameter")
             for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
+                if attr(p, "type") == "Calculation":
+                    c = find_calc(p)
                     if c:
                         return f"result=({c})"
 
         # Insert from URL (171)
         if type_id == "171":
-            fr = field_ref_str(step)
-            params = step.findall(".//ParameterValues/Parameter")
+            fr = ""
             url = ""
             for p in params:
-                val = p.find("Value")
-                if val is not None:
-                    c = find_calc(val)
-                    if c and ("http" in c.lower() or "fmnet" in c.lower() or len(c) > 20):
+                ptype = attr(p, "type")
+                if ptype == "FieldReference":
+                    fr = param_field_ref(p) or fr
+                elif ptype == "Calculation":
+                    c = find_calc(p)
+                    if c and not url:
                         url = c
-                        break
+            if not fr:
+                fr = field_ref_str(step)
             if fr and url:
                 return f"target={fr} url=({url[:120]})"
             elif url:
