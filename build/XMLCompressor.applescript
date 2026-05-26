@@ -9,15 +9,18 @@ on run
 	try
 		set xmlFile to choose file with prompt "Select your FileMaker 'Save a Copy as XML' file:" of type {"public.xml", "xml"}
 	on error number -128
+		tell me to quit
 		return -- user cancelled
 	end try
 	processFile(xmlFile)
+	tell me to quit
 end run
 
 on open theseFiles
 	repeat with f in theseFiles
 		processFile(f)
 	end repeat
+	tell me to quit
 end open
 
 on processFile(xmlFile)
