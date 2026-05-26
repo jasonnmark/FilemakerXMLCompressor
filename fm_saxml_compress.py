@@ -591,12 +591,13 @@ class SaXMLCompressor:
         output = []
         output.append("# FileMaker Scripts")
         output.append("")
-        output.append(
-            "Steps are line-numbered inside fenced `javascript` blocks so VS Code renders them "
-            "with syntax highlighting. Disabled steps are prefixed with `//` on every line, which "
-            "makes them render in the comment color (greyed out). The FileMaker `Comment` step is "
-            "rendered as `// text` (no redundant `Comment` label)."
-        )
+        # Parsing guide for downstream tools / LLMs that need to slice this
+        # file by script. Lives at the top so it survives any head-only read.
+        output.append("## Format")
+        output.append("- Script = `## Script: **`Name`** <sub>`[id:N]`</sub>` header → next `## Script:` header. Slice between headers; don't read line-by-line.")
+        output.append("- Steps numbered `N.` in ```javascript fences. Multi-line steps: only line 1 has `N.`; rest are unprefixed continuations (~14k lines).")
+        output.append("- Disabled steps: `//` on every line. `// (empty)` = blank spacer. `--`/`-` script with no fence = folder separator.")
+        output.append("- grep lands inside continuations (no step#/name attached). To locate a match, walk back to nearest `## Script:` header.")
         output.append("")
 
         sc = self._find_catalog("ScriptCatalog")
