@@ -682,7 +682,10 @@ class SaXMLCompressor:
         highlighter colors them as comments (effectively greying them out).
         """
         step_type_id = attr(step, "id")
-        step_name = STEP_TYPES.get(step_type_id, f"Step#{step_type_id}")
+        # SaXML puts the human-readable step name directly on the <Step> element.
+        # Trust that first; the hardcoded STEP_TYPES map is only a fallback for
+        # steps where the XML omits the attribute.
+        step_name = attr(step, "name") or STEP_TYPES.get(step_type_id, f"Step#{step_type_id}")
         enabled = attr(step, "enable") or attr(step, "enabled", "True")
         is_disabled = enabled == "False"
 
@@ -706,11 +709,15 @@ class SaXMLCompressor:
     def _extract_saxml_step_params(self, step, type_id, step_name):
         """Extract parameters from a SaXML step element."""
 
-        # Comment
+        # Comment — the body is stored as the `value` attribute on a
+        # <Comment> element (NOT a <Text> child): the XML looks like
+        # <Parameter type="Comment"><Comment value="…"/></Parameter>.
         if type_id == "89":
-            t = step.find(".//Text")
-            if t is not None:
-                ct = text(t)
+            c = step.find("ParameterValues/Parameter/Comment")
+            if c is None:
+                c = step.find(".//Comment")
+            if c is not None:
+                ct = attr(c, "value") or text(c)
                 if ct:
                     return f"// {ct}"
             return "// (empty)"
@@ -1052,7 +1059,7 @@ class SaXMLCompressor:
                     step = action.find("Step")
                     if step is not None:
                         step_type = attr(step, "id")
-                        sname = STEP_TYPES.get(step_type, f"Step#{step_type}")
+                        sname = attr(step, "name") or STEP_TYPES.get(step_type, f"Step#{step_type}")
                         extras.append(f"action `{sname}`")
             for child_lo in gb_el.iter("LayoutObject"):
                 if child_lo is not lo:
@@ -1098,7 +1105,7 @@ class SaXMLCompressor:
                     step = action.find("Step")
                     if step is not None:
                         step_type = attr(step, "id")
-                        sname = STEP_TYPES.get(step_type, f"Step#{step_type}")
+                        sname = attr(step, "name") or STEP_TYPES.get(step_type, f"Step#{step_type}")
                         extras.append(f"action `{sname}`")
             for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                 tref = trigger.find("ScriptReference")
