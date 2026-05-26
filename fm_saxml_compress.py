@@ -318,61 +318,34 @@ class SaXMLCompressor:
     # ============================================================
     def extract_schema(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER SCHEMA - Tables & Fields")
-        output.append("=" * 70)
+        output.append("# FileMaker Schema")
         output.append("")
-        output.append("KEY:")
-        output.append("  T: <table_name> [id:<id>]")
-        output.append("  F: <name> | <type> | <data_type> [id:<id>]")
-        output.append("     type: Normal, Calculated, Summary")
-        output.append("     data_type: Text, Number, Date, Time, Timestamp, Container")
-        output.append("  CALC: <formula>")
-        output.append("  AE: auto-enter info")
-        output.append("  VAL: validation rules")
-        output.append("  CMT: field comment")
+        output.append("Tables, fields, calculations, validation, and storage.")
         output.append("")
 
-        # Base tables
         bt_catalog = self._find_catalog("BaseTableCatalog")
         if bt_catalog is None:
-            output.append("(No BaseTableCatalog found)")
+            output.append("_(No BaseTableCatalog found)_")
             return "\n".join(output)
 
         table_count = 0
         field_count = 0
 
-        # Build table name map from BaseTableCatalog
-        table_map = {}  # id -> name
-        for bt in bt_catalog:
-            if bt.tag in ("BaseTable", "Table") or "Table" in bt.tag:
-                tid = attr(bt, "id")
-                tname = attr(bt, "name")
-                if tid and tname:
-                    table_map[tid] = tname
-
-        # Fields: can be in FieldsForTables or standalone FieldCatalog elements
-        # Structure: FieldCatalog > BaseTableReference + ObjectList > Field
-        # OR: FieldsForTables > FieldCatalog > ...
         fields_by_table = defaultdict(list)
 
         for action in [self.add_action, self.modify_action]:
             if action is None:
                 continue
-
-            # Path 1: FieldsForTables wrapper
             for fft in action.findall("FieldsForTables"):
                 self._collect_fields(fft, fields_by_table)
-
-            # Path 2: Standalone FieldCatalog (could be direct child or deeper)
             for fc in action.findall("FieldCatalog"):
                 self._collect_fields(fc, fields_by_table)
 
-        # Output tables with their fields
         for (tid, tname) in sorted(fields_by_table.keys(), key=lambda x: x[1]):
             table_count += 1
             fields = fields_by_table[(tid, tname)]
-            output.append(f"T: {tname} [id:{tid}] ({len(fields)} fields)")
+            output.append(f"## Table: **`{tname}`** — {len(fields)} fields  <sub>`[id:{tid}]`</sub>")
+            output.append("")
 
             for field in fields:
                 fid = attr(field, "id")
@@ -385,16 +358,16 @@ class SaXMLCompressor:
                     continue
                 field_count += 1
 
-                output.append(f"  F: {fname} | {ftype} | {dtype} [id:{fid}]")
+                type_bits = [b for b in (ftype, dtype) if b]
+                type_str = f" *({', '.join(type_bits)})*" if type_bits else ""
+                output.append(f"- **`{fname}`**{type_str}  <sub>`[id:{fid}]`</sub>")
 
-                # Calculation
                 calc = field.find("Calculation")
                 if calc is not None:
                     calc_text = find_calc(field)
                     if calc_text:
-                        output.append(f"    CALC: {calc_text[:200]}")
+                        output.append(f"  - **Calc:** `{calc_text[:200]}`")
 
-                # Auto-enter
                 ae = field.find("AutoEnter")
                 if ae is not None:
                     ae_parts = []
@@ -403,11 +376,10 @@ class SaXMLCompressor:
                         ae_parts.append(ae_type)
                     ae_calc = find_calc(ae)
                     if ae_calc:
-                        ae_parts.append(f"Calc={ae_calc[:120]}")
+                        ae_parts.append(f"calc=`{ae_calc[:120]}`")
                     if ae_parts:
-                        output.append(f"    AE: {', '.join(ae_parts)}")
+                        output.append(f"  - **Auto-enter:** {', '.join(ae_parts)}")
 
-                # Validation
                 val = field.find("Validation")
                 if val is not None:
                     val_parts = []
@@ -421,13 +393,11 @@ class SaXMLCompressor:
                     if attr(val, "allowOverride") == "False":
                         val_parts.append("strict")
                     if val_parts:
-                        output.append(f"    VAL: {', '.join(val_parts)}")
+                        output.append(f"  - **Validation:** {', '.join(val_parts)}")
 
-                # Comment (attribute on Field element)
                 if comment:
-                    output.append(f"    CMT: {comment[:100]}")
+                    output.append(f"  - **Comment:** _{comment[:100]}_")
 
-                # Storage (global, unstored, index)
                 stor = field.find("Storage")
                 if stor is not None:
                     stor_parts = []
@@ -442,18 +412,17 @@ class SaXMLCompressor:
                     if reps and reps != "1":
                         stor_parts.append(f"reps:{reps}")
                     if stor_parts:
-                        output.append(f"    STOR: {', '.join(stor_parts)}")
+                        output.append(f"  - **Storage:** {', '.join(stor_parts)}")
 
             output.append("")
 
-        # Tables without fields (from BaseTableCatalog)
         found_ids = set(tid for tid, _ in fields_by_table.keys())
         for bt in bt_catalog:
             tid = attr(bt, "id")
             tname = attr(bt, "name")
             if tid and tid not in found_ids and tname:
                 table_count += 1
-                output.append(f"T: {tname} [id:{tid}] (0 fields in export)")
+                output.append(f"## Table: **`{tname}`** — 0 fields in export  <sub>`[id:{tid}]`</sub>")
                 output.append("")
 
         self.stats["tables"] = table_count
@@ -504,21 +473,20 @@ class SaXMLCompressor:
     # ============================================================
     def extract_relationships(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER TABLE OCCURRENCES & RELATIONSHIPS")
-        output.append("=" * 70)
+        output.append("# Table Occurrences & Relationships")
         output.append("")
-        output.append("KEY:")
-        output.append("  TO: <n> -> base:<table> [id:<id>]")
-        output.append("    REL: <=> <other_TO> [predicates] (flags)")
-        output.append("    Each TO shows its relationships indented below.")
+        output.append(
+            "Each table occurrence (TO) is shown with its relationships listed beneath. "
+            "Flags in `(…)` after a relationship: `createL/createR` = allow creation of related records, "
+            "`deleteL/deleteR` = cascade delete."
+        )
         output.append("")
 
         to_catalog = self._find_catalog("TableOccurrenceCatalog")
         if to_catalog is None:
             to_catalog = self._find_catalog("TableOccuerenceCatalogue")
         if to_catalog is None:
-            output.append("(No TableOccurrenceCatalog found)")
+            output.append("_(No TableOccurrenceCatalog found)_")
             return "\n".join(output)
 
         to_count = 0
@@ -579,14 +547,13 @@ class SaXMLCompressor:
             if l_delete == "True": flags.append("deleteL")
             if r_delete == "True": flags.append("deleteR")
 
-            pred_str = " [" + ", ".join(preds) + "]" if preds else ""
-            flag_str = " (" + ",".join(flags) + ")" if flags else ""
+            pred_str = " — " + ", ".join(f"`{p}`" for p in preds) if preds else ""
+            flag_str = f" _({', '.join(flags)})_" if flags else ""
             rel_count += 1
 
-            rels_by_to[left_name].append(f"<=> {right_name}{pred_str}{flag_str}")
-            rels_by_to[right_name].append(f"<=> {left_name}{pred_str}{flag_str}")
+            rels_by_to[left_name].append((right_name, pred_str, flag_str))
+            rels_by_to[right_name].append((left_name, pred_str, flag_str))
 
-        # Output each TO with its relationships inline
         for to_el in to_catalog:
             if to_el.tag != "TableOccurrence":
                 continue
@@ -601,10 +568,16 @@ class SaXMLCompressor:
                 bt_ref = to_el.find(".//BaseTableReference")
             bt_name = attr(bt_ref, "name") if bt_ref is not None else "?"
 
-            output.append(f"TO: {to_name} -> base:{bt_name} [id:{to_id}]")
+            output.append(f"## TO: **`{to_name}`** → base: `{bt_name}`  <sub>`[id:{to_id}]`</sub>")
+            output.append("")
 
-            for rel_line in rels_by_to.get(to_name, []):
-                output.append(f"  REL: {rel_line}")
+            rels = rels_by_to.get(to_name, [])
+            if not rels:
+                output.append("_(no relationships)_")
+            else:
+                for other, pred_str, flag_str in rels:
+                    output.append(f"- ⟷ **`{other}`**{pred_str}{flag_str}")
+            output.append("")
 
         self.stats["table_occurrences"] = to_count
         self.stats["relationships"] = rel_count
@@ -619,7 +592,7 @@ class SaXMLCompressor:
         output.append("# FileMaker Scripts")
         output.append("")
         output.append(
-            "Scripts are line-numbered inside fenced `javascript` blocks so VS Code renders them "
+            "Steps are line-numbered inside fenced `javascript` blocks so VS Code renders them "
             "with syntax highlighting. Disabled steps are prefixed with `//` on every line, which "
             "makes them render in the comment color (greyed out). The FileMaker `Comment` step is "
             "rendered as `// text` (no redundant `Comment` label)."
@@ -659,17 +632,21 @@ class SaXMLCompressor:
             is_folder = attr(item, "isFolder") == "True"
             name = attr(item, "name")
             sid = attr(item, "id")
-            heading = "#" * min(2 + depth, 6)
 
             if is_folder:
-                output.append(f"{heading} FOLDER: {name}")
+                # Folders use h2 (or h3 if nested) so the outline panel groups by folder.
+                folder_heading = "##" if depth == 0 else "###"
+                output.append(f"{folder_heading} 📁 {name}")
                 output.append("")
                 for child in item:
                     if child.tag == "Script":
                         process_script_item(child, depth + 1)
             elif item.tag == "Script" and name:
                 script_count += 1
-                output.append(f"{heading} SCRIPT: {name} [id:{sid}]")
+                # Scripts always h2 so every script is the same prominence in the outline.
+                output.append("---")
+                output.append("")
+                output.append(f"## Script: **`{name}`**  <sub>`[id:{sid}]`</sub>")
                 output.append("")
 
                 steps = step_index.get(sid, [])
@@ -902,35 +879,31 @@ class SaXMLCompressor:
     # ============================================================
     def extract_layouts(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER LAYOUTS")
-        output.append("=" * 70)
+        output.append("# FileMaker Layouts")
         output.append("")
-        output.append("KEY:")
-        output.append("  LAYOUT: <name> [id:<id>] TO:<table_occurrence>")
-        output.append("    TRIGGER: <type> -> <script>")
-        output.append("    FIELD <TO::FieldName> | name:<obj_name>")
-        output.append("    BUTTON \"label\" | -> <script> | param=(...)")
-        output.append("    PORTAL showFrom:<TO> | filter=(...)")
-        output.append("    TABCTRL tabs:[...] | POPOVER | WEBVIEWER")
+        output.append(
+            "Each layout shows its table occurrence, script triggers, and a nested list "
+            "of objects (fields, buttons, portals, tab controls, web viewers). Decorative "
+            "shapes (lines, rectangles) are stripped. Folders use 📁; layouts are h2."
+        )
         output.append("")
 
         lc = self._find_catalog("LayoutCatalog", search_modify=True)
         if lc is None:
-            output.append("(No LayoutCatalog found)")
+            output.append("_(No LayoutCatalog found)_")
             return "\n".join(output)
 
         layout_count = 0
         obj_count = 0
 
-        # Layouts can be in Groups (folders) or directly
         def process_layout_item(item, depth=0):
             nonlocal layout_count, obj_count
-            prefix = "  " * depth
 
             if item.tag == "Group" or attr(item, "isFolder") == "True":
                 name = attr(item, "name")
-                output.append(f"{prefix}FOLDER: {name}")
+                folder_heading = "##" if depth == 0 else "###"
+                output.append(f"{folder_heading} 📁 {name}")
+                output.append("")
                 for child in item:
                     process_layout_item(child, depth + 1)
                 return
@@ -944,18 +917,30 @@ class SaXMLCompressor:
             tor = item.find("TableOccurrenceReference")
             to_name = attr(tor, "name") if tor is not None else "?"
 
-            output.append(f"{prefix}LAYOUT: {name} [id:{lid}] TO:{to_name}")
+            output.append("---")
+            output.append("")
+            output.append(f"## Layout: **`{name}`** → TO: `{to_name}`  <sub>`[id:{lid}]`</sub>")
+            output.append("")
 
-            # Layout triggers (direct children only, not deep into objects)
             triggers_el = item.find("ScriptTriggers")
+            triggers_out = []
             if triggers_el is not None:
                 for trigger in triggers_el.findall("ScriptTrigger"):
                     sref = trigger.find("ScriptReference")
                     if sref is not None:
                         taction = attr(trigger, "action", "Trigger")
-                        output.append(f"{prefix}  TRIGGER: {taction} -> {attr(sref, 'name')}")
+                        triggers_out.append(f"- **{taction}** → `{attr(sref, 'name')}`")
+            if triggers_out:
+                output.append("**Triggers**")
+                output.append("")
+                output.extend(triggers_out)
+                output.append("")
 
-            # Parts contain objects
+            objs_before = len(output)
+            output.append("**Objects**")
+            output.append("")
+            obj_section_start = len(output)
+
             parts_list = item.find("PartsList")
             if parts_list is not None:
                 for part in parts_list.findall("Part"):
@@ -963,15 +948,18 @@ class SaXMLCompressor:
                     if obj_list is not None:
                         for lo in obj_list:
                             if lo.tag == "LayoutObject":
-                                self._process_layout_object(lo, output, depth + 1)
+                                self._process_layout_object(lo, output, 0)
                                 obj_count += 1
 
-            # Also check for ObjectList directly under Layout
             for obj_list in item.findall("ObjectList"):
                 for lo in obj_list:
                     if lo.tag == "LayoutObject":
-                        self._process_layout_object(lo, output, depth + 1)
+                        self._process_layout_object(lo, output, 0)
                         obj_count += 1
+
+            if len(output) == obj_section_start:
+                # Nothing emitted — strip the "Objects" header.
+                del output[objs_before:]
 
             output.append("")
 
@@ -983,7 +971,7 @@ class SaXMLCompressor:
         return "\n".join(output)
 
     def _process_layout_object(self, lo, output, depth, max_depth=8):
-        """Process a single LayoutObject from SaXML."""
+        """Process a single LayoutObject from SaXML, emitting nested markdown bullets."""
         if depth > max_depth:
             return
         prefix = "  " * depth
@@ -991,11 +979,9 @@ class SaXMLCompressor:
         otype = attr(lo, "type")
         oname = attr(lo, "name")
 
-        # Skip decorative / noise
         if otype in ("Line", "Rectangle", "RoundedRect", "Oval", "Graphic"):
             return
 
-        # --- HIDE CONDITION (applies to any object) ---
         hide_calc = ""
         hide_el = lo.find("Hide")
         if hide_el is not None:
@@ -1004,24 +990,26 @@ class SaXMLCompressor:
                 t = hc.find("Text")
                 hide_calc = (t.text or "").strip() if t is not None else ""
 
-        # --- PORTAL ---
+        def emit(label, extras=None):
+            """Emit `- **LABEL** — extra · extra` at the current depth."""
+            tail = (" — " + " · ".join(extras)) if extras else ""
+            output.append(f"{prefix}- {label}{tail}")
+
         portal_el = lo.find("Portal")
         if otype == "Portal" or portal_el is not None:
             if portal_el is None:
                 portal_el = lo
             tor = portal_el.find("TableOccurrenceReference")
             portal_to = attr(tor, "name") if tor is not None else "?"
-            parts = [f"PORTAL showFrom:{portal_to}"]
+            extras = []
             if oname:
-                parts.append(f"name:{oname}")
-            # Filter (Calculation directly inside Portal)
+                extras.append(f"name `{oname}`")
             pc = portal_el.find("Calculation")
             if pc is not None:
                 t = pc.find("Text")
                 fc = (t.text or "").strip() if t is not None else ""
                 if fc:
-                    parts.append(f"filter=({fc[:120]})")
-            # Sort
+                    extras.append(f"filter `{fc[:120]}`")
             sort_spec = portal_el.find("SortSpecification")
             if sort_spec is not None:
                 sorts = []
@@ -1034,245 +1022,234 @@ class SaXMLCompressor:
                         sdir = "↑" if attr(sort, "type") == "Ascending" else "↓"
                         sorts.append(f"{to2}::{fname}{sdir}" if to2 else f"{fname}{sdir}")
                 if sorts:
-                    parts.append(f"sort=[{','.join(sorts)}]")
+                    extras.append(f"sort `{', '.join(sorts)}`")
             if hide_calc:
-                parts.append(f"hideWhen=({hide_calc[:80]})")
-            output.append(f"{prefix}{' | '.join(parts)}")
-            # Recurse into portal's ObjectList
+                extras.append(f"hideWhen `{hide_calc[:80]}`")
+            emit(f"**PORTAL** showFrom `{portal_to}`", extras)
             for obj_list in portal_el.findall("ObjectList"):
                 for child_lo in obj_list:
                     if child_lo.tag == "LayoutObject":
                         self._process_layout_object(child_lo, output, depth + 1, max_depth)
             return
 
-        # --- GROUPED BUTTON (most common button type in SaXML) ---
         gb_el = lo.find("GroupedButton")
         if otype == "Grouped Button" or gb_el is not None:
             if gb_el is None:
                 gb_el = lo
-            parts = ["BUTTON"]
+            label = "**BUTTON**"
             if oname:
-                parts.append(f'"{oname}"')
-            # Script in <action> > <ScriptReference>
+                label += f" `{oname}`"
+            extras = []
             action = gb_el.find("action")
             if action is not None:
                 sref = action.find("ScriptReference")
                 if sref is not None:
-                    parts.append(f"-> {attr(sref, 'name')}")
-                    # Script param: action > Calculation > Text
+                    extras.append(f"→ `{attr(sref, 'name')}`")
                     pcalc = action.find("Calculation/Text")
                     if pcalc is not None and pcalc.text and pcalc.text.strip():
-                        parts.append(f"param=({pcalc.text.strip()[:100]})")
-                # Single-step action (no script reference)
+                        extras.append(f"param `{pcalc.text.strip()[:100]}`")
                 if sref is None:
                     step = action.find("Step")
                     if step is not None:
                         step_type = attr(step, "id")
                         sname = STEP_TYPES.get(step_type, f"Step#{step_type}")
-                        parts.append(f"action:{sname}")
-            # Find label from child text/field objects
+                        extras.append(f"action `{sname}`")
             for child_lo in gb_el.iter("LayoutObject"):
                 if child_lo is not lo:
                     child_type = attr(child_lo, "type")
                     if child_type == "Edit Box":
                         cfr = self._get_field_ref(child_lo)
                         if cfr:
-                            parts.append(cfr)
+                            extras.append(f"field `{cfr}`")
                             break
                     elif child_type == "Text":
                         data = child_lo.find(".//Data")
                         if data is not None and data.text:
-                            label = data.text.strip()[:50]
-                            if label:
-                                parts.append(f'label:"{label}"')
+                            lbl = data.text.strip()[:50]
+                            if lbl:
+                                extras.append(f'label "{lbl}"')
                                 break
             if hide_calc:
-                parts.append(f"hideWhen=({hide_calc[:80]})")
-            output.append(f"{prefix}{' | '.join(parts)}")
+                extras.append(f"hideWhen `{hide_calc[:80]}`")
+            emit(label, extras)
             return
 
-        # --- BUTTON (plain, non-grouped) ---
         button_el = lo.find("Button")
         if otype == "Button" or button_el is not None:
-            parts = ["BUTTON"]
+            label = "**BUTTON**"
             if oname:
-                parts.append(f'"{oname}"')
+                label += f" `{oname}`"
+            extras = []
             btn = button_el if button_el is not None else lo
-            # Label: Button > Label > Text > StyledText > Data
             label_data = btn.find("Label/Text/StyledText/Data")
             if label_data is not None and label_data.text:
-                label = label_data.text.strip()[:50]
-                if label:
-                    parts.append(f'label:"{label}"')
-            # Script: action > ScriptReference
+                lbl = label_data.text.strip()[:50]
+                if lbl:
+                    extras.append(f'label "{lbl}"')
             action = btn.find("action")
             if action is not None:
                 sref = action.find("ScriptReference")
                 if sref is not None:
-                    parts.append(f"-> {attr(sref, 'name')}")
-                    # Script param: action > Calculation > Text
+                    extras.append(f"→ `{attr(sref, 'name')}`")
                     pcalc = action.find("Calculation/Text")
                     if pcalc is not None and pcalc.text and pcalc.text.strip():
-                        parts.append(f"param=({pcalc.text.strip()[:100]})")
+                        extras.append(f"param `{pcalc.text.strip()[:100]}`")
                 else:
-                    # Single-step action
                     step = action.find("Step")
                     if step is not None:
                         step_type = attr(step, "id")
                         sname = STEP_TYPES.get(step_type, f"Step#{step_type}")
-                        parts.append(f"action:{sname}")
-            # Script triggers on the button itself
+                        extras.append(f"action `{sname}`")
             for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                 tref = trigger.find("ScriptReference")
                 if tref is not None:
-                    parts.append(f"TRIGGER:{attr(trigger, 'action')}->{attr(tref, 'name')}")
+                    extras.append(f"trigger {attr(trigger, 'action')} → `{attr(tref, 'name')}`")
             if hide_calc:
-                parts.append(f"hideWhen=({hide_calc[:80]})")
-            output.append(f"{prefix}{' | '.join(parts)}")
-            # Recurse for child objects
+                extras.append(f"hideWhen `{hide_calc[:80]}`")
+            emit(label, extras)
             for obj_list in lo.findall("ObjectList"):
                 for child_lo in obj_list:
                     if child_lo.tag == "LayoutObject":
                         self._process_layout_object(child_lo, output, depth + 1, max_depth)
             return
 
-        # --- BUTTON BAR ---
         if otype == "Button Bar":
-            output.append(f"{prefix}BUTTONBAR{' | name:' + oname if oname else ''}")
+            extras = [f"name `{oname}`"] if oname else None
+            emit("**BUTTON BAR**", extras)
             for obj_list in lo.findall("ObjectList"):
                 for child_lo in obj_list:
                     if child_lo.tag == "LayoutObject":
                         self._process_layout_object(child_lo, output, depth + 1, max_depth)
             return
 
-        # --- POPOVER BUTTON ---
         if otype == "Popover Button":
-            parts = ["POPOVER"]
+            label = "**POPOVER**"
             if oname:
-                parts.append(f'"{oname}"')
+                label += f" `{oname}`"
+            extras = []
             sref = lo.find(".//ScriptReference")
             if sref is not None:
-                parts.append(f"-> {attr(sref, 'name')}")
+                extras.append(f"→ `{attr(sref, 'name')}`")
             if hide_calc:
-                parts.append(f"hideWhen=({hide_calc[:80]})")
-            output.append(f"{prefix}{' | '.join(parts)}")
+                extras.append(f"hideWhen `{hide_calc[:80]}`")
+            emit(label, extras)
             for obj_list in lo.findall(".//ObjectList"):
                 for child_lo in obj_list:
                     if child_lo.tag == "LayoutObject":
                         self._process_layout_object(child_lo, output, depth + 1, max_depth)
             return
 
-        # --- TAB CONTROL ---
         tab_ctrl = lo.find("TabControl")
         if otype == "Tab Control" or tab_ctrl is not None:
-            tab_names = []
             panels = lo.findall(".//TabPanel") + lo.findall(".//Panel")
+            tab_names = [attr(tp, "name") or "?" for tp in panels]
+            extras = [f"tabs `{', '.join(tab_names)}`"]
+            if oname:
+                extras.append(f"name `{oname}`")
+            emit("**TAB CONTROL**", extras)
+            tab_prefix = "  " * (depth + 1)
             for tp in panels:
                 tn = attr(tp, "name") or "?"
-                tab_names.append(tn)
-            output.append(f"{prefix}TABCTRL tabs:[{','.join(tab_names)}]"
-                          f"{' | name:' + oname if oname else ''}")
-            for tp in panels:
-                tn = attr(tp, "name") or "?"
-                output.append(f"{prefix}  TAB: {tn}")
+                output.append(f"{tab_prefix}- **TAB** `{tn}`")
                 for obj_list in tp.findall("ObjectList"):
                     for child_lo in obj_list:
                         if child_lo.tag == "LayoutObject":
                             self._process_layout_object(child_lo, output, depth + 2, max_depth)
             return
 
-        # --- SLIDE CONTROL ---
         if otype == "Slide Control":
-            output.append(f"{prefix}SLIDECTRL{' | name:' + oname if oname else ''}")
+            extras = [f"name `{oname}`"] if oname else None
+            emit("**SLIDE CONTROL**", extras)
             for obj_list in lo.findall(".//ObjectList"):
                 for child_lo in obj_list:
                     if child_lo.tag == "LayoutObject":
                         self._process_layout_object(child_lo, output, depth + 1, max_depth)
             return
 
-        # --- WEB VIEWER ---
         if otype == "Web Viewer":
             url = ""
             wv_calc = lo.find(".//Calculation/Text")
             if wv_calc is not None:
                 url = (wv_calc.text or "").strip()
-            output.append(f"{prefix}WEBVIEWER{' | name:' + oname if oname else ''}"
-                          f"{' | url=(' + url[:100] + ')' if url else ''}")
+            extras = []
+            if oname:
+                extras.append(f"name `{oname}`")
+            if url:
+                extras.append(f"url `{url[:100]}`")
+            emit("**WEB VIEWER**", extras or None)
             return
 
-        # --- EDIT BOX / FIELD ---
         field_el = lo.find("Field")
         if otype == "Edit Box" or field_el is not None:
             fr = self._get_field_ref(lo)
             if not fr:
                 return
-            fparts = [f"FIELD {fr}"]
+            label = f"**FIELD** `{fr}`"
+            extras = []
             if oname:
-                fparts.append(f"name:{oname}")
-            # Script triggers
+                extras.append(f"name `{oname}`")
             for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                 tref = trigger.find("ScriptReference")
                 if tref is not None:
                     ttype = attr(trigger, "type", "Trigger")
-                    fparts.append(f"TRIGGER:{ttype}->{attr(tref, 'name')}")
+                    extras.append(f"trigger {ttype} → `{attr(tref, 'name')}`")
             if hide_calc:
-                fparts.append(f"hideWhen=({hide_calc[:80]})")
-            output.append(f"{prefix}{' | '.join(fparts)}")
+                extras.append(f"hideWhen `{hide_calc[:80]}`")
+            emit(label, extras)
             return
 
-        # --- DROP DOWN / POP-UP MENU / CHECKBOX / RADIO ---
         if otype in ("Drop Down List", "Pop-up Menu", "Checkbox Set", "Radio Button Set"):
             fr = self._get_field_ref(lo)
             if fr:
-                fparts = [f"FIELD {fr} ({otype})"]
+                label = f"**FIELD** `{fr}` *({otype})*"
+                extras = []
                 if oname:
-                    fparts.append(f"name:{oname}")
+                    extras.append(f"name `{oname}`")
                 for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                     tref = trigger.find("ScriptReference")
                     if tref is not None:
-                        fparts.append(f"TRIGGER:{attr(trigger, 'action')}->{attr(tref, 'name')}")
+                        extras.append(f"trigger {attr(trigger, 'action')} → `{attr(tref, 'name')}`")
                 if hide_calc:
-                    fparts.append(f"hideWhen=({hide_calc[:80]})")
-                output.append(f"{prefix}{' | '.join(fparts)}")
+                    extras.append(f"hideWhen `{hide_calc[:80]}`")
+                emit(label, extras)
             return
 
-        # --- TEXT (only if has trigger, merge field, or hide condition) ---
         if otype == "Text":
             has_trigger = lo.find("ScriptTriggers/ScriptTrigger") is not None
             merge_fr = self._get_field_ref(lo)
             if has_trigger or merge_fr or hide_calc:
-                tparts = ["TEXT"]
+                label = "**TEXT**"
+                extras = []
                 if oname:
-                    tparts.append(f"name:{oname}")
+                    extras.append(f"name `{oname}`")
                 if merge_fr:
-                    tparts.append(f"merge:{merge_fr}")
+                    extras.append(f"merge `{merge_fr}`")
                 for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                     tref = trigger.find("ScriptReference")
                     if tref is not None:
-                        tparts.append(f"TRIGGER:{attr(trigger, 'action')}->{attr(tref, 'name')}")
+                        extras.append(f"trigger {attr(trigger, 'action')} → `{attr(tref, 'name')}`")
                 if hide_calc:
-                    tparts.append(f"hideWhen=({hide_calc[:80]})")
-                output.append(f"{prefix}{' | '.join(tparts)}")
+                    extras.append(f"hideWhen `{hide_calc[:80]}`")
+                emit(label, extras)
             return
 
-        # --- GENERIC: anything else with a script, trigger, hide, or name ---
         sref = lo.find(".//ScriptReference")
         has_trigger = lo.find("ScriptTriggers/ScriptTrigger") is not None
         if sref is not None or has_trigger or hide_calc or (oname and otype):
-            gparts = [f"OBJ:{otype}"]
+            label = f"**{otype.upper()}**" if otype else "**OBJECT**"
+            extras = []
             if oname:
-                gparts.append(f"name:{oname}")
+                extras.append(f"name `{oname}`")
             if sref is not None:
-                gparts.append(f"-> {attr(sref, 'name')}")
+                extras.append(f"→ `{attr(sref, 'name')}`")
             for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                 tref = trigger.find("ScriptReference")
                 if tref is not None:
-                    gparts.append(f"TRIGGER:{attr(trigger, 'action')}->{attr(tref, 'name')}")
+                    extras.append(f"trigger {attr(trigger, 'action')} → `{attr(tref, 'name')}`")
             if hide_calc:
-                gparts.append(f"hideWhen=({hide_calc[:80]})")
-            output.append(f"{prefix}{' | '.join(gparts)}")
+                extras.append(f"hideWhen `{hide_calc[:80]}`")
+            emit(label, extras)
 
-        # Recurse into child ObjectLists
         for obj_list in lo.findall("ObjectList"):
             for child_lo in obj_list:
                 if child_lo.tag == "LayoutObject":
@@ -1300,14 +1277,12 @@ class SaXMLCompressor:
     # ============================================================
     def extract_valuelists(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER VALUE LISTS")
-        output.append("=" * 70)
+        output.append("# FileMaker Value Lists")
         output.append("")
 
         vlc = self._find_catalog("ValueListCatalog")
         if vlc is None:
-            output.append("(No ValueListCatalog found)")
+            output.append("_(No ValueListCatalog found)_")
             return "\n".join(output)
 
         vl_count = 0
@@ -1318,14 +1293,12 @@ class SaXMLCompressor:
                 continue
             vl_count += 1
             vl_type = attr(vl, "type", "Custom")
-            output.append(f"VL: {name} [id:{vid}] type:{vl_type}")
-
-            # Field-based value lists
+            output.append(f"- **`{name}`** *({vl_type})*  <sub>`[id:{vid}]`</sub>")
             fr = field_ref_str(vl)
             if fr:
-                output.append(f"  source: {fr}")
-        output.append("")
+                output.append(f"  - **Source:** `{fr}`")
 
+        output.append("")
         self.stats["valuelists"] = vl_count
         return "\n".join(output)
 
@@ -1334,14 +1307,12 @@ class SaXMLCompressor:
     # ============================================================
     def extract_custom_functions(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER CUSTOM FUNCTIONS")
-        output.append("=" * 70)
+        output.append("# FileMaker Custom Functions")
         output.append("")
 
         cfc = self._find_catalog("CustomFunctionsCatalog")
         if cfc is None:
-            output.append("(No CustomFunctionsCatalog found)")
+            output.append("_(No CustomFunctionsCatalog found)_")
             return "\n".join(output)
 
         cf_count = 0
@@ -1352,7 +1323,6 @@ class SaXMLCompressor:
                 continue
             cf_count += 1
 
-            # Parameters
             params = []
             for p in cf.findall(".//Parameter"):
                 pname = attr(p, "name")
@@ -1360,13 +1330,16 @@ class SaXMLCompressor:
                     params.append(pname)
             param_str = f"({', '.join(params)})" if params else "()"
 
-            output.append(f"CF: {name}{param_str} [id:{cfid}]")
-
-            # Calculation body
+            output.append("---")
+            output.append("")
+            output.append(f"## **`{name}{param_str}`**  <sub>`[id:{cfid}]`</sub>")
+            output.append("")
             calc = find_calc(cf)
             if calc:
-                output.append(f"  = {calc[:300]}")
-            output.append("")
+                output.append("```")
+                output.append(calc)
+                output.append("```")
+                output.append("")
 
         self.stats["custom_functions"] = cf_count
         return "\n".join(output)
@@ -1376,16 +1349,15 @@ class SaXMLCompressor:
     # ============================================================
     def extract_accounts(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER ACCOUNTS & PRIVILEGES")
-        output.append("=" * 70)
+        output.append("# FileMaker Accounts & Privileges")
         output.append("")
 
-        # Accounts might be in Metadata > AddAction
         search_locations = [self.add_action, self.modify_action, self.meta_add_action]
 
         acct_count = 0
-        output.append("--- ACCOUNTS ---")
+        output.append("## Accounts")
+        output.append("")
+        accts_emitted = False
         for loc in search_locations:
             if loc is None:
                 continue
@@ -1397,20 +1369,25 @@ class SaXMLCompressor:
                     if not name:
                         continue
                     acct_count += 1
+                    accts_emitted = True
                     enabled = attr(acct, "enable") or attr(acct, "active")
                     state = "Active" if enabled == "True" else "Inactive"
                     atype = attr(acct, "type")
                     psref = acct.find("PrivilegeSetReference")
                     ps = attr(psref, "name") if psref is not None else ""
-                    parts = [f"  ACCT: {name}", state]
+                    extras = [f"_{state}_"]
                     if atype:
-                        parts.append(atype)
+                        extras.append(atype)
                     if ps:
-                        parts.append(f"priv:{ps}")
-                    output.append(" | ".join(parts))
-
+                        extras.append(f"priv `{ps}`")
+                    output.append(f"- **`{name}`** — {' · '.join(extras)}")
+        if not accts_emitted:
+            output.append("_(none)_")
         output.append("")
-        output.append("--- PRIVILEGE SETS ---")
+
+        output.append("## Privilege Sets")
+        output.append("")
+        ps_emitted = False
         for loc in search_locations:
             if loc is None:
                 continue
@@ -1418,10 +1395,15 @@ class SaXMLCompressor:
                 for ps in self._catalog_items(cat):
                     name = attr(ps, "name")
                     if name:
-                        output.append(f"  PRIVSET: {name}")
-
+                        ps_emitted = True
+                        output.append(f"- **`{name}`**")
+        if not ps_emitted:
+            output.append("_(none)_")
         output.append("")
-        output.append("--- EXTENDED PRIVILEGES ---")
+
+        output.append("## Extended Privileges")
+        output.append("")
+        ext_emitted = False
         for loc in search_locations:
             if loc is None:
                 continue
@@ -1430,7 +1412,11 @@ class SaXMLCompressor:
                 for ep in self._catalog_items(cat):
                     name = attr(ep, "name")
                     if name:
-                        output.append(f"  EXT: {name}")
+                        ext_emitted = True
+                        output.append(f"- **`{name}`**")
+        if not ext_emitted:
+            output.append("_(none)_")
+        output.append("")
 
         self.stats["accounts"] = acct_count
         return "\n".join(output)
@@ -1470,44 +1456,24 @@ class SaXMLCompressor:
     # ============================================================
     # RUN ALL
     # ============================================================
-    @staticmethod
-    def _wrap_legacy_body(content):
-        """Promote a legacy `===/TITLE/===` header to a markdown h1 and wrap
-        the rest in a fenced code block, so the existing layout (indentation,
-        separator lines) survives MD rendering and VS Code's outline panel
-        picks up the title."""
-        lines = content.split("\n")
-        title = None
-        body_start = 0
-        if len(lines) >= 3 and lines[0].startswith("=" * 3) and lines[2].startswith("=" * 3):
-            title = lines[1].strip()
-            body_start = 3
-            while body_start < len(lines) and not lines[body_start].strip():
-                body_start += 1
-        body = "\n".join(lines[body_start:]).rstrip()
-        header = f"# {title}\n\n" if title else ""
-        return f"{header}```\n{body}\n```\n"
-
     def run(self):
         self.parse()
 
-        # (filename, extractor, wrap_legacy_body)
-        # Scripts is already full markdown; others get wrapped.
         extractors = [
-            ("01_SCHEMA.md", self.extract_schema, True),
-            ("02_RELATIONSHIPS.md", self.extract_relationships, True),
-            ("03_SCRIPTS.md", self.extract_scripts, False),
-            ("04_LAYOUTS.md", self.extract_layouts, True),
-            ("05_VALUELISTS.md", self.extract_valuelists, True),
-            ("06_CUSTOM_FUNCS.md", self.extract_custom_functions, True),
-            ("07_ACCOUNTS.md", self.extract_accounts, True),
+            ("01_SCHEMA.md", self.extract_schema),
+            ("02_RELATIONSHIPS.md", self.extract_relationships),
+            ("03_SCRIPTS.md", self.extract_scripts),
+            ("04_LAYOUTS.md", self.extract_layouts),
+            ("05_VALUELISTS.md", self.extract_valuelists),
+            ("06_CUSTOM_FUNCS.md", self.extract_custom_functions),
+            ("07_ACCOUNTS.md", self.extract_accounts),
         ]
 
-        for filename, extractor, wrap in extractors:
+        for filename, extractor in extractors:
             print(f"\nExtracting {filename}...")
             content = extractor()
-            if wrap:
-                content = self._wrap_legacy_body(content)
+            if not content.endswith("\n"):
+                content += "\n"
             filepath = os.path.join(self.output_dir, filename)
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(content)
