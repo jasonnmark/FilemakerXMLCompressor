@@ -68,17 +68,9 @@ on processFile(xmlFile)
 		return
 	end try
 
-	-- Pull the last few lines of output for the success dialog
-	set tailLines to do shell script "/usr/bin/tail -n 6 <<'EOF'
-" & output & "
-EOF"
-
-	set userChoice to button returned of (display dialog "DDR compression complete." & return & return & tailLines buttons {"Show in Finder", "Done"} default button "Show in Finder" with icon note)
-
-	if userChoice is "Show in Finder" then
-		tell application "Finder"
-			activate
-			open (POSIX file outDir as alias)
-		end tell
-	end if
+	-- Reveal the output folder in Finder; no confirmation dialog.
+	tell application "Finder"
+		activate
+		open (POSIX file outDir as alias)
+	end tell
 end processFile
