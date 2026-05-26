@@ -616,23 +616,19 @@ class SaXMLCompressor:
     # ============================================================
     def extract_scripts(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER SCRIPTS")
-        output.append("=" * 70)
+        output.append("# FileMaker Scripts")
         output.append("")
-        output.append("KEY:")
-        output.append("  FOLDER: <name> [id:<id>]")
-        output.append("  SCRIPT: <name> [id:<id>]")
-        output.append("    Steps numbered sequentially per script.")
-        output.append("    <line#>. <StepType> <parameters>")
+        output.append(
+            "Scripts are line-numbered inside fenced `javascript` blocks so VS Code renders them "
+            "with syntax highlighting. Disabled steps are prefixed with `//` on every line, which "
+            "makes them render in the comment color (greyed out). The FileMaker `Comment` step is "
+            "rendered as `// text` (no redundant `Comment` label)."
+        )
         output.append("")
 
-        # Script catalog has names/folders
         sc = self._find_catalog("ScriptCatalog")
-        # Steps are in StepsForScripts
         sfs = self._find_catalog("StepsForScripts")
 
-        # Build step index: script_id -> list of Step elements
         step_index = {}
         if sfs is not None:
             for script_el in sfs:
@@ -645,7 +641,6 @@ class SaXMLCompressor:
                     if obj_list is not None:
                         step_index[sid] = list(obj_list)
                     else:
-                        # Steps might be direct children
                         steps = script_el.findall("Step")
                         if steps:
                             step_index[sid] = steps
@@ -655,38 +650,42 @@ class SaXMLCompressor:
         step_total = 0
 
         if sc is None:
-            output.append("(No ScriptCatalog found)")
+            output.append("_(No ScriptCatalog found)_")
             return "\n".join(output)
 
         def process_script_item(item, depth=0):
             nonlocal script_count, step_total
-            prefix = "  " * depth
 
             is_folder = attr(item, "isFolder") == "True"
             name = attr(item, "name")
             sid = attr(item, "id")
+            heading = "#" * min(2 + depth, 6)
 
             if is_folder:
-                output.append(f"{prefix}FOLDER: {name} [id:{sid}]")
+                output.append(f"{heading} FOLDER: {name}")
+                output.append("")
                 for child in item:
                     if child.tag == "Script":
                         process_script_item(child, depth + 1)
-                output.append("")
             elif item.tag == "Script" and name:
                 script_count += 1
-                output.append(f"{prefix}SCRIPT: {name} [id:{sid}]")
+                output.append(f"{heading} SCRIPT: {name} [id:{sid}]")
+                output.append("")
 
-                # Get steps from index
                 steps = step_index.get(sid, [])
-                # Sort by index attribute
                 steps_sorted = sorted(steps, key=lambda s: int(attr(s, "index", "0")))
 
-                for line_num, step in enumerate(steps_sorted, 1):
-                    step_text = self._format_step(step, depth + 1, line_num)
-                    if step_text:
-                        output.append(step_text)
-                        step_total += 1
+                if not steps_sorted:
+                    output.append("_(no steps)_")
+                    output.append("")
+                    return
 
+                output.append("```javascript")
+                for line_num, step in enumerate(steps_sorted, 1):
+                    step_lines = self._format_step_md(step, line_num)
+                    output.extend(step_lines)
+                    step_total += 1
+                output.append("```")
                 output.append("")
 
         for child in sc:
@@ -697,21 +696,35 @@ class SaXMLCompressor:
         print(f"  Scripts: {script_count} scripts, {step_total} steps")
         return "\n".join(output)
 
-    def _format_step(self, step, depth, line_num):
-        """Format a SaXML script step."""
-        prefix = "  " * depth
+    def _format_step_md(self, step, line_num):
+        """Render a script step as one-or-more code-block lines.
+
+        Multi-line calculations keep the FileMaker-source formatting they came
+        in with — we just split on `\n` so the disabled-prefix can be applied
+        per line. Disabled steps get `//` on every line so the JS syntax
+        highlighter colors them as comments (effectively greying them out).
+        """
         step_type_id = attr(step, "id")
         step_name = STEP_TYPES.get(step_type_id, f"Step#{step_type_id}")
         enabled = attr(step, "enable") or attr(step, "enabled", "True")
-        disabled = " [DISABLED]" if enabled == "False" else ""
+        is_disabled = enabled == "False"
 
-        # Extract parameters based on step type
         params = self._extract_saxml_step_params(step, step_type_id, step_name)
 
-        if params:
-            return f"{prefix}{line_num}. {step_name}{disabled} {params}"
+        if step_type_id == "89":
+            # Comment step — params already begins with "// "; drop the step name.
+            body = f"{line_num}. {params}"
+        elif params:
+            body = f"{line_num}. {step_name} {params}"
         else:
-            return f"{prefix}{line_num}. {step_name}{disabled}"
+            body = f"{line_num}. {step_name}"
+
+        lines = body.split("\n")
+
+        if is_disabled:
+            lines = [f"// {l}" for l in lines]
+
+        return lines
 
     def _extract_saxml_step_params(self, step, type_id, step_name):
         """Extract parameters from a SaXML step element."""
@@ -1427,49 +1440,74 @@ class SaXMLCompressor:
     # ============================================================
     def write_summary(self):
         output = []
-        output.append("=" * 70)
-        output.append("FILEMAKER SaXML SUMMARY")
-        output.append("=" * 70)
+        output.append("# FileMaker SaXML Summary")
         output.append("")
-        output.append(f"Source: {self.xml_path}")
-        output.append(f"File: {attr(self.root, 'File')}")
-        output.append(f"FileMaker version: {attr(self.root, 'Source')}")
-        output.append(f"SaXML format: {attr(self.root, 'version')}")
+        output.append(f"- **Source:** `{self.xml_path}`")
+        output.append(f"- **File:** {attr(self.root, 'File')}")
+        output.append(f"- **FileMaker version:** {attr(self.root, 'Source')}")
+        output.append(f"- **SaXML format:** {attr(self.root, 'version')}")
         output.append("")
-        output.append("--- COUNTS ---")
+        output.append("## Counts")
+        output.append("")
         for k, v in sorted(self.stats.items()):
-            output.append(f"  {k}: {v}")
+            output.append(f"- **{k}:** {v}")
         output.append("")
-        output.append("--- OUTPUT FILES ---")
-        output.append("  01_SCHEMA.txt       - Tables, fields, calculations")
-        output.append("  02_RELATIONSHIPS.txt - Table occurrences and relationships")
-        output.append("  03_SCRIPTS.txt      - Scripts with step details")
-        output.append("  04_LAYOUTS.txt      - Layouts with objects")
-        output.append("  05_VALUELISTS.txt   - Value list definitions")
-        output.append("  06_CUSTOM_FUNCS.txt - Custom function definitions")
-        output.append("  07_ACCOUNTS.txt     - Security: accounts, privileges")
-        output.append("  10_SUMMARY.txt      - This file")
+        output.append("## Output files")
+        output.append("")
+        output.append("| File | Contents |")
+        output.append("|------|----------|")
+        output.append("| `01_SCHEMA.md` | Tables, fields, calculations |")
+        output.append("| `02_RELATIONSHIPS.md` | Table occurrences and relationships |")
+        output.append("| `03_SCRIPTS.md` | Scripts with step details (full markdown) |")
+        output.append("| `04_LAYOUTS.md` | Layouts with objects |")
+        output.append("| `05_VALUELISTS.md` | Value list definitions |")
+        output.append("| `06_CUSTOM_FUNCS.md` | Custom function definitions |")
+        output.append("| `07_ACCOUNTS.md` | Security: accounts, privileges |")
+        output.append("| `10_SUMMARY.md` | This file |")
+        output.append("")
         return "\n".join(output)
 
     # ============================================================
     # RUN ALL
     # ============================================================
+    @staticmethod
+    def _wrap_legacy_body(content):
+        """Promote a legacy `===/TITLE/===` header to a markdown h1 and wrap
+        the rest in a fenced code block, so the existing layout (indentation,
+        separator lines) survives MD rendering and VS Code's outline panel
+        picks up the title."""
+        lines = content.split("\n")
+        title = None
+        body_start = 0
+        if len(lines) >= 3 and lines[0].startswith("=" * 3) and lines[2].startswith("=" * 3):
+            title = lines[1].strip()
+            body_start = 3
+            while body_start < len(lines) and not lines[body_start].strip():
+                body_start += 1
+        body = "\n".join(lines[body_start:]).rstrip()
+        header = f"# {title}\n\n" if title else ""
+        return f"{header}```\n{body}\n```\n"
+
     def run(self):
         self.parse()
 
+        # (filename, extractor, wrap_legacy_body)
+        # Scripts is already full markdown; others get wrapped.
         extractors = [
-            ("01_SCHEMA.txt", self.extract_schema),
-            ("02_RELATIONSHIPS.txt", self.extract_relationships),
-            ("03_SCRIPTS.txt", self.extract_scripts),
-            ("04_LAYOUTS.txt", self.extract_layouts),
-            ("05_VALUELISTS.txt", self.extract_valuelists),
-            ("06_CUSTOM_FUNCS.txt", self.extract_custom_functions),
-            ("07_ACCOUNTS.txt", self.extract_accounts),
+            ("01_SCHEMA.md", self.extract_schema, True),
+            ("02_RELATIONSHIPS.md", self.extract_relationships, True),
+            ("03_SCRIPTS.md", self.extract_scripts, False),
+            ("04_LAYOUTS.md", self.extract_layouts, True),
+            ("05_VALUELISTS.md", self.extract_valuelists, True),
+            ("06_CUSTOM_FUNCS.md", self.extract_custom_functions, True),
+            ("07_ACCOUNTS.md", self.extract_accounts, True),
         ]
 
-        for filename, extractor in extractors:
+        for filename, extractor, wrap in extractors:
             print(f"\nExtracting {filename}...")
             content = extractor()
+            if wrap:
+                content = self._wrap_legacy_body(content)
             filepath = os.path.join(self.output_dir, filename)
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -1477,7 +1515,7 @@ class SaXMLCompressor:
 
         # Summary last (needs stats)
         summary = self.write_summary()
-        filepath = os.path.join(self.output_dir, "10_SUMMARY.txt")
+        filepath = os.path.join(self.output_dir, "10_SUMMARY.md")
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(summary)
         print(f"\n  Written: {filepath}")
