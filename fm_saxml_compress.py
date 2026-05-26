@@ -1476,6 +1476,15 @@ class SaXMLCompressor:
             ("07_ACCOUNTS.md", self.extract_accounts),
         ]
 
+        # Prepended to every output file so the source DB is identifiable when
+        # comparing schemas across exports.
+        folder_name = os.path.basename(os.path.normpath(self.output_dir))
+        xml_name = os.path.basename(self.xml_path)
+        source_header = (
+            f"> 📁 **{folder_name}**  \n"
+            f"> 📄 Source: `{xml_name}`\n\n"
+        )
+
         for filename, extractor in extractors:
             print(f"\nExtracting {filename}...")
             content = extractor()
@@ -1483,14 +1492,14 @@ class SaXMLCompressor:
                 content += "\n"
             filepath = os.path.join(self.output_dir, filename)
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(content)
+                f.write(source_header + content)
             print(f"  Written: {filepath}")
 
         # Summary last (needs stats)
         summary = self.write_summary()
         filepath = os.path.join(self.output_dir, "10_SUMMARY.md")
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(summary)
+            f.write(source_header + summary)
         print(f"\n  Written: {filepath}")
 
         print("\n" + "=" * 70)
