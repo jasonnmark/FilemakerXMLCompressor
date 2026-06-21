@@ -1383,6 +1383,23 @@ class SaXMLCompressor:
             output.append("_(No CustomFunctionsCatalog found)_")
             return "\n".join(output)
 
+        # Function bodies live in a separate CalcsForCustomFunctions catalog —
+        # the CustomFunctionsCatalog itself only carries names and parameters
+        # (same split as ScriptCatalog vs StepsForScripts). Index the calcs by
+        # the function id so we can join them back on.
+        calc_index = {}
+        cfcalcs = self._find_catalog("CalcsForCustomFunctions")
+        if cfcalcs is not None:
+            for cfc_el in cfcalcs.iter("CustomFunctionCalc"):
+                ref = cfc_el.find("CustomFunctionReference")
+                if ref is None:
+                    continue
+                ctext = find_calc(cfc_el)
+                if ctext:
+                    rid = attr(ref, "id")
+                    if rid:
+                        calc_index[rid] = ctext
+
         cf_count = 0
         for cf in self._catalog_items(cfc):
             name = attr(cf, "name")
@@ -1402,7 +1419,9 @@ class SaXMLCompressor:
             output.append("")
             output.append(f"## **`{name}{param_str}`**  <sub>`[id:{cfid}]`</sub>")
             output.append("")
-            calc = find_calc(cf)
+            # Prefer the body from CalcsForCustomFunctions; fall back to any
+            # inline calc in the catalog entry for older/edge exports.
+            calc = calc_index.get(cfid) or find_calc(cf)
             if calc:
                 output.append("```")
                 output.append(calc)
