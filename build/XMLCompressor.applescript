@@ -37,22 +37,13 @@ on processFile(xmlFile)
 	set parentAlias to (POSIX file parentDir) as alias
 
 	try
-		set outFolder to choose folder with prompt "Where should the compressed output folder go?" default location parentAlias
+		set outFolder to choose folder with prompt "Choose the folder to put the compressed files in:" default location parentAlias
 	on error number -128
 		return -- user cancelled
 	end try
-	set outRoot to POSIX path of outFolder
 
-	-- Build a unique subfolder name based on the XML filename
-	set xmlBase to do shell script "/usr/bin/basename " & quoted form of xmlPath & " .xml"
-	set outDir to outRoot & xmlBase & "_Compressed"
-
-	-- If it already exists, append a timestamp
-	set existsCheck to do shell script "[ -d " & quoted form of outDir & " ] && echo yes || echo no"
-	if existsCheck is "yes" then
-		set ts to do shell script "/bin/date +%Y%m%d-%H%M%S"
-		set outDir to outDir & "_" & ts
-	end if
+	-- Dump the output straight into the chosen folder — no subfolder.
+	set outDir to POSIX path of outFolder
 
 	-- Locate the bundled Python scripts
 	set pyScriptPath to POSIX path of (path to resource kScript)

@@ -890,8 +890,10 @@ class SaXMLCompressor:
         output.append("# FileMaker Layouts")
         output.append("")
         output.append(
-            "Each layout shows its table occurrence, script triggers, and a nested list "
-            "of objects (fields, buttons, portals, tab controls, web viewers). Decorative "
+            "Each layout shows its table occurrence, layout-level script triggers, and a "
+            "nested list of objects (fields, buttons, portals, tab controls, web viewers). "
+            "Per-object annotations include `name`, object `trigger`s, `condFormat` "
+            "(conditional-formatting rules), `placeholder` text, and `hideWhen`. Decorative "
             "shapes (lines, rectangles) are stripped. Folders use 📁; layouts are h2."
         )
         output.append("")
@@ -998,8 +1000,24 @@ class SaXMLCompressor:
                 t = hc.find("Text")
                 hide_calc = (t.text or "").strip() if t is not None else ""
 
+        # Conditional formatting and placeholder text apply to (almost) any
+        # object type, so compute them once here and let emit() append them
+        # automatically — no per-branch wiring needed.
+        cond_formats = self._conditional_formats(lo)
+        placeholder = self._placeholder_text(lo)
+
         def emit(label, extras=None):
-            """Emit `- **LABEL** — extra · extra` at the current depth."""
+            """Emit `- **LABEL** — extra · extra` at the current depth.
+
+            Conditional formatting and placeholder text are appended here so
+            every object type picks them up without each branch repeating the
+            logic.
+            """
+            extras = list(extras) if extras else []
+            for cf in cond_formats:
+                extras.append(f"condFormat `{cf[:80]}`")
+            if placeholder:
+                extras.append(f"placeholder `{placeholder[:80]}`")
             tail = (" — " + " · ".join(extras)) if extras else ""
             output.append(f"{prefix}- {label}{tail}")
 
@@ -1199,8 +1217,8 @@ class SaXMLCompressor:
             for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                 tref = trigger.find("ScriptReference")
                 if tref is not None:
-                    ttype = attr(trigger, "type", "Trigger")
-                    extras.append(f"trigger {ttype} → `{attr(tref, 'name')}`")
+                    taction = attr(trigger, "action") or attr(trigger, "type", "Trigger")
+                    extras.append(f"trigger {taction} → `{attr(tref, 'name')}`")
             if hide_calc:
                 extras.append(f"hideWhen `{hide_calc[:80]}`")
             emit(label, extras)
@@ -1225,7 +1243,7 @@ class SaXMLCompressor:
         if otype == "Text":
             has_trigger = lo.find("ScriptTriggers/ScriptTrigger") is not None
             merge_fr = self._get_field_ref(lo)
-            if has_trigger or merge_fr or hide_calc:
+            if has_trigger or merge_fr or hide_calc or cond_formats or placeholder:
                 label = "**TEXT**"
                 extras = []
                 if oname:
@@ -1243,7 +1261,8 @@ class SaXMLCompressor:
 
         sref = lo.find(".//ScriptReference")
         has_trigger = lo.find("ScriptTriggers/ScriptTrigger") is not None
-        if sref is not None or has_trigger or hide_calc or (oname and otype):
+        if (sref is not None or has_trigger or hide_calc or cond_formats
+                or placeholder or (oname and otype)):
             label = f"**{otype.upper()}**" if otype else "**OBJECT**"
             extras = []
             if oname:
@@ -1253,7 +1272,8 @@ class SaXMLCompressor:
             for trigger in lo.findall("ScriptTriggers/ScriptTrigger"):
                 tref = trigger.find("ScriptReference")
                 if tref is not None:
-                    extras.append(f"trigger {attr(trigger, 'action')} → `{attr(tref, 'name')}`")
+                    taction = attr(trigger, "action") or attr(trigger, "type", "Trigger")
+                    extras.append(f"trigger {taction} → `{attr(tref, 'name')}`")
             if hide_calc:
                 extras.append(f"hideWhen `{hide_calc[:80]}`")
             emit(label, extras)
@@ -1279,6 +1299,46 @@ class SaXMLCompressor:
         if to_name and fname:
             return f"{to_name}::{fname}"
         return fname or ""
+
+    def _conditional_formats(self, lo):
+        """Return the calc text of each conditional-formatting rule on an object.
+
+        SaXML nests these as a direct child:
+          <LayoutObject>…<Conditions><Formatting membercount="N">
+            <Condition><Calculation><Text>…</Text></Calculation>
+            <LocalCSS>…styling…</LocalCSS></Condition>…
+        We keep the rule's calc (what triggers the formatting); the actual CSS
+        styling is dropped as noise. `Conditions/Formatting` is matched only as
+        a direct child so we don't pull in child objects' rules."""
+        out = []
+        fmt = lo.find("Conditions/Formatting")
+        if fmt is None:
+            return out
+        for cond in fmt.findall("Condition"):
+            calc = cond.find("Calculation")
+            if calc is not None:
+                t = calc.find("Text")
+                if t is not None and t.text and t.text.strip():
+                    out.append(t.text.strip())
+        return out
+
+    def _placeholder_text(self, lo):
+        """Return a field's placeholder-text calc, scoped to the object's own
+        Field so portals/containers don't borrow a nested field's placeholder.
+
+        Structure: <Field>…<Display>…<Placeholder><Calculation><Text>…"""
+        field_el = lo.find("Field")
+        if field_el is None:
+            return ""
+        ph = field_el.find(".//Placeholder")
+        if ph is None:
+            return ""
+        calc = ph.find("Calculation")
+        if calc is not None:
+            t = calc.find("Text")
+            if t is not None and t.text and t.text.strip():
+                return t.text.strip()
+        return ""
 
     # ============================================================
     # 05 VALUE LISTS
